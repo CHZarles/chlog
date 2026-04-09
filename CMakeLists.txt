@@ -27,6 +27,7 @@ FetchContent_MakeAvailable(doctest)
 # Library — usable via add_subdirectory(chlog) or find_package(chlog)
 # ---------------------------------------------------------------------------
 add_library(chlog STATIC
+    src/chlog.cpp
     src/format.cpp
     src/sink.cpp
 )
@@ -42,6 +43,7 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(chlog_tests
         tests/test_main.cpp
+        tests/test_sync_log.cpp
         tests/rotating_file_sink_test.cpp
         tests/format_common_test.cpp
     )

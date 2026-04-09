@@ -14,7 +14,7 @@ public:
     bool show_microseconds = true;
     bool show_level = true;
     bool show_thread = false;
-    bool show_file = false;
+    bool show_file = true;
   };
 
   HeaderFormatter() = default;

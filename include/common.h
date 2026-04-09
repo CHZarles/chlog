@@ -35,6 +35,18 @@ struct SourceLocation {
   const char *function = nullptr;
 };
 
+// call by chlog::log
+inline std::string_view basename_of(std::string_view path) {
+  const size_t slash = path.find_last_of("\\/");
+  return (slash == std::string_view::npos) ? path : path.substr(slash + 1);
+}
+
+inline std::string format_source_location(SourceLocation src) {
+  if (!src.file || src.file[0] == '\0' || src.line <= 0)
+    return {};
+  return fmt::format("{}:{}", basename_of(src.file), src.line);
+}
+
 // 表示日志实体
 std::string this_thread_name();
 struct LogEntry {
