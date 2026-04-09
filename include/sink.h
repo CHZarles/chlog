@@ -36,7 +36,21 @@ private:
   bool useColour_;
   std::mutex mtx_;
 
-  static const char *colour_for(Level lvl);
+  const char *colour_for(Level lvl) {
+    switch (lvl) {
+    case Level::DEBUG:
+      return "\033[36m"; // cyan
+    case Level::INFO:
+      return "\033[0m"; // reset
+    case Level::WARN:
+      return "\033[33m"; // yellow
+    case Level::ERROR:
+      return "\033[31m"; // red
+    case Level::CRITICAL:
+      return "\033[1;31m"; // bold red
+    }
+    return "\033[0m";
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -52,10 +66,26 @@ public:
   ~RotatingFileSink() override;
 
   void write(std::string_view message, Level level) override;
-  void flush() override {}
+  void flush() override;
 
 private:
-  void rotate() {}
+  void rotate();
+
+  const char *level_to_string(Level level) {
+    switch (level) {
+    case Level::DEBUG:
+      return "DEBUG";
+    case Level::INFO:
+      return "INFO";
+    case Level::WARN:
+      return "WARN";
+    case Level::ERROR:
+      return "ERROR";
+    case Level::CRITICAL:
+      return "CRITICAL";
+    }
+    return "UNKNOWN";
+  }
 
   const std::string filePath_;
   const size_t maxSize_;
