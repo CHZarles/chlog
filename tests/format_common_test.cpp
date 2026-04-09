@@ -24,16 +24,40 @@ TEST_CASE("LogEntry preserves explicit constructor fields") {
   CHECK_EQ(entry.file, "sink.cpp:42");
 }
 
-TEST_CASE("HeaderFormatter expands known tokens and keeps unknown ones") {
+TEST_CASE("HeaderFormatter formats enabled fields in fixed order") {
   LogEntry entry(1'710'000'000'123'456ULL, Level::ERROR, "worker-1", "disk full",
                  "sink.cpp:42");
-  HeaderFormatter formatter("{date} {HMS} {HMSf} [{level}] {thread} {file} {missing}");
+  HeaderFormatter formatter({
+      .show_date = true,
+      .show_time = true,
+      .show_microseconds = true,
+      .show_level = true,
+      .show_thread = true,
+      .show_file = true,
+  });
 
   const std::string formatted = formatter.format(entry);
 
-  CHECK_NE(formatted.find("[ERROR] worker-1 sink.cpp:42 {missing}"),
-           std::string::npos);
+  CHECK_NE(formatted.find("[ERROR] worker-1 sink.cpp:42"), std::string::npos);
   CHECK(std::regex_search(formatted, std::regex(R"(\d{4}-\d{2}-\d{2})")));
-  CHECK(std::regex_search(formatted, std::regex(R"(\d{2}:\d{2}:\d{2})")));
   CHECK(std::regex_search(formatted, std::regex(R"(\d{2}:\d{2}:\d{2}\.\d{6})")));
+}
+
+TEST_CASE("HeaderFormatter can omit microseconds and optional fields") {
+  LogEntry entry(1'710'000'000'123'456ULL, Level::INFO, "worker-1", "disk full",
+                 "sink.cpp:42");
+  HeaderFormatter formatter({
+      .show_date = false,
+      .show_time = true,
+      .show_microseconds = false,
+      .show_level = true,
+      .show_thread = false,
+      .show_file = false,
+  });
+
+  const std::string formatted = formatter.format(entry);
+
+  CHECK_EQ(formatted.find("worker-1"), std::string::npos);
+  CHECK_EQ(formatted.find("sink.cpp:42"), std::string::npos);
+  CHECK(std::regex_match(formatted, std::regex(R"(\d{2}:\d{2}:\d{2} \[INFO\])")));
 }

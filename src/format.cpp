@@ -33,81 +33,39 @@ HeaderFormatter::format_hmsf(const std::chrono::system_clock::time_point &tp) {
                      static_cast<int>(us.count()));
 }
 
-void HeaderFormatter::compile() {
-  tokens_.clear();
-  std::string::size_type pos = 0;
-  while (pos < pattern_.size()) {
-    const auto open = pattern_.find('{', pos);
-    if (open == std::string::npos) {
-      tokens_.push_back(Token{TokenType::LITERAL, pattern_.substr(pos)});
-      break;
-    }
-    if (open > pos) {
-      tokens_.push_back(
-          Token{TokenType::LITERAL, pattern_.substr(pos, open - pos)});
-    }
-    const auto close = pattern_.find('}', open);
-    if (close == std::string::npos) {
-      tokens_.push_back(Token{TokenType::LITERAL, pattern_.substr(open)});
-      break;
-    }
-    const std::string name = pattern_.substr(open + 1, close - open - 1);
-    const TokenType type = name_to_type(name);
-    if (type != TokenType::LITERAL) {
-      tokens_.push_back(Token{type, {}});
-    } else {
-      tokens_.push_back(
-          Token{TokenType::LITERAL, pattern_.substr(open, close - open + 1)});
-    }
-    pos = close + 1;
-  }
-}
-
 std::string HeaderFormatter::format(const LogEntry &entry) const {
-
   std::string out;
-  out.reserve(pattern_.size() + 32);
-  for (const Token &tok : tokens_) {
-    switch (tok.type) {
-    case TokenType::LITERAL:
-      out += tok.literal;
-      break;
-    case TokenType::HMS:
-      out += format_hms(entry.timestamp);
-      break;
-    case TokenType::HMSf:
-      out += format_hmsf(entry.timestamp);
-      break;
-    case TokenType::LEVEL:
-      out += to_string(entry.level);
-      break;
-    case TokenType::THREAD:
-      out += entry.threadName;
-      break;
-    case TokenType::FILE:
-      out += entry.file;
-      break;
-    case TokenType::DATE:
-      out += format_date(entry.timestamp);
-      break;
-    }
-  }
-  return out;
-}
 
-HeaderFormatter::TokenType
-HeaderFormatter::name_to_type(std::string_view name) {
-  if (name == "HMS")
-    return TokenType::HMS;
-  if (name == "HMSf")
-    return TokenType::HMSf;
-  if (name == "level")
-    return TokenType::LEVEL;
-  if (name == "thread")
-    return TokenType::THREAD;
-  if (name == "file")
-    return TokenType::FILE;
-  if (name == "date")
-    return TokenType::DATE;
-  return TokenType::LITERAL;
+  auto append_field = [&out](std::string_view field) {
+    if (field.empty()) {
+      return;
+    }
+    if (!out.empty()) {
+      out += ' ';
+    }
+    out += field;
+  };
+
+  if (options_.show_date) {
+    append_field(format_date(entry.timestamp));
+  }
+
+  if (options_.show_time) {
+    append_field(options_.show_microseconds ? format_hmsf(entry.timestamp)
+                                            : format_hms(entry.timestamp));
+  }
+
+  if (options_.show_level) {
+    append_field(fmt::format("[{}]", to_string(entry.level)));
+  }
+
+  if (options_.show_thread) {
+    append_field(entry.threadName);
+  }
+
+  if (options_.show_file) {
+    append_field(entry.file);
+  }
+
+  return out;
 }

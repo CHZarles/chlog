@@ -3,31 +3,27 @@
 #include <chrono>
 #include <ctime>
 #include <string>
-#include <string_view>
-#include <vector>
 
 #include <fmt/format.h>
 
 class HeaderFormatter {
 public:
-  enum class TokenType { LITERAL, HMS, HMSf, LEVEL, THREAD, FILE, DATE };
-
-  struct Token {
-    TokenType type;
-    std::string literal;
+  struct Options {
+    bool show_date = false;
+    bool show_time = true;
+    bool show_microseconds = true;
+    bool show_level = true;
+    bool show_thread = false;
+    bool show_file = false;
   };
 
-  // 指定日志格式
-  explicit HeaderFormatter(std::string pattern = "{HMSf} [{level}] ")
-      : pattern_(std::move(pattern)) {
-    compile();
-  }
+  HeaderFormatter() = default;
+  explicit HeaderFormatter(Options options) : options_(options) {}
 
-  [[nodiscard]] std::string format(const LogEntry &entry) const;
+  std::string format(const LogEntry &entry) const;
 
 private:
-  std::string pattern_;
-  std::vector<Token> tokens_;
+  Options options_;
 
   static std::string
   format_local_time(const std::chrono::system_clock::time_point &tp,
@@ -40,8 +36,4 @@ private:
 
   static std::string
   format_hmsf(const std::chrono::system_clock::time_point &tp);
-
-  void compile();
-
-  static TokenType name_to_type(std::string_view name);
 };
