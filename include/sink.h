@@ -71,22 +71,6 @@ public:
 private:
   void rotate();
 
-  const char *level_to_string(Level level) {
-    switch (level) {
-    case Level::DEBUG:
-      return "DEBUG";
-    case Level::INFO:
-      return "INFO";
-    case Level::WARN:
-      return "WARN";
-    case Level::ERROR:
-      return "ERROR";
-    case Level::CRITICAL:
-      return "CRITICAL";
-    }
-    return "UNKNOWN";
-  }
-
   const std::string filePath_;
   const size_t maxSize_;
   const size_t maxBackups_;
