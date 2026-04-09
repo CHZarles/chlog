@@ -86,10 +86,8 @@ void RotatingFileSink::rotate() {
   curSize_ = 0;
 }
 
-void RotatingFileSink::write(std::string_view message, Level level) {
-  const std::string line =
-      "[" + std::string(level_to_string(level)) + "] " + std::string(message);
-  const size_t needed = line.size() + 1; // +1 for '\n'
+void RotatingFileSink::write(std::string_view message, Level /*level*/) {
+  const size_t needed = message.size() + 1; // +1 for '\n'
 
   std::lock_guard<std::mutex> lock(mtx_);
 
@@ -101,8 +99,8 @@ void RotatingFileSink::write(std::string_view message, Level level) {
     return;
   }
 
-  const size_t written = std::fwrite(line.data(), 1, line.size(), file_);
-  if (written != line.size() ||
+  const size_t written = std::fwrite(message.data(), 1, message.size(), file_);
+  if (written != message.size() ||
       std::fputc('\n', file_) == EOF) { // 失败直接返回
     return;
   }

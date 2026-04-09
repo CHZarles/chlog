@@ -21,6 +21,13 @@ target_include_directories(chlog PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(rotating_file_sink_test tests/rotating_file_sink_test.cpp)
+    target_link_libraries(rotating_file_sink_test PRIVATE chlog::sink)
+    add_test(NAME rotating_file_sink_test COMMAND rotating_file_sink_test)
+endif()
+
 # ---------------------------------------------------------------------------
 # Examples
 # ---------------------------------------------------------------------------
