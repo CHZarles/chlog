@@ -1,7 +1,7 @@
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <fmt/format.h>
-#include <string_view>
 
 enum class Level : uint32_t {
   DEBUG = 0,
@@ -28,24 +28,34 @@ constexpr const char *to_string(Level lvl) {
 }
 
 // source location information
+// 被外界调用
 struct SourceLocation {
   const char *file = nullptr;
   int line = 0;
   const char *function = nullptr;
 };
 
-[[nodiscard]] inline std::string_view basename_of(std::string_view path) {
-  const size_t slash = path.find_last_of("\\/");
-  return (slash == std::string_view::npos) ? path : path.substr(slash + 1);
-}
+// 表示日志实体
+std::string this_thread_name();
+struct LogEntry {
+  std::chrono::system_clock::time_point timestamp;
+  Level level;
+  std::string threadName;
+  std::string message;
+  std::string file;
 
-[[nodiscard]] inline std::string format_source_location(SourceLocation src) {
-  if (!src.file || src.file[0] == '\0' || src.line <= 0)
-    return {};
-  return fmt::format("{}:{}", basename_of(src.file), src.line);
-}
+  LogEntry(Level lvl, std::string msg, std::string srcFile = {})
+      : timestamp(std::chrono::system_clock::now()), level(lvl),
+        threadName(this_thread_name()), message(std::move(msg)),
+        file(std::move(srcFile)) {}
 
-// log entity
+  LogEntry(uint64_t ts_us, Level lvl, std::string thr, std::string msg,
+           std::string srcFile = {})
+      : timestamp(std::chrono::microseconds(ts_us)), level(lvl),
+        threadName(std::move(thr)), message(std::move(msg)),
+        file(std::move(srcFile)) {}
+};
+
 [[nodiscard]] inline std::string this_thread_name() {
   char buf[16] = {0};
   const int err = pthread_getname_np(pthread_self(), buf,
