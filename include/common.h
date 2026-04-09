@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <mutex>
 
 enum class Level : uint32_t {
   DEBUG = 0,

@@ -1,5 +1,9 @@
 #pragma once
 #include "common.h"
+#include <cstdio>
+#include <iostream>
+#include <mutex>
+#include <string>
 #include <string_view>
 
 // ---------------------------------------------------------------------------
@@ -16,4 +20,21 @@ public:
 
 protected:
   Sink() = default;
+};
+
+// ---------------------------------------------------------------------------
+// ConsoleSink — writes coloured output to stdout
+// ---------------------------------------------------------------------------
+class ConsoleSink : public Sink {
+public:
+  explicit ConsoleSink(bool useColour = true) : useColour_(useColour) {}
+
+  void write(std::string_view message, Level level) override;
+  void flush() override;
+
+private:
+  bool useColour_;
+  std::mutex mtx_;
+
+  static const char *colour_for(Level lvl);
 };
