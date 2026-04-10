@@ -11,7 +11,8 @@
 namespace fs = std::filesystem;
 
 TEST_CASE("chlog writes a synchronous console log line") {
-  const fs::path capturePath = fs::temp_directory_path() / "chlog_sync_log_test.txt";
+  const fs::path capturePath =
+      fs::temp_directory_path() / "chlog_sync_log_test.txt";
   std::error_code ec;
   fs::remove(capturePath, ec);
 
