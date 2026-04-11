@@ -71,3 +71,39 @@ string_view 的语义是字符串的视图, 它本身不接管或者拷贝从函
 - 移动赋值
 
 ## 讲一个 atomic
+
+## SPSC 环形队列中 capacity、mask、slotBytes、slots 如何配合实现无锁取模
+
+环形队列有 N 个槽位，生产者/消费者各持有一个递增的逻辑序号 `producer_`/`comsumer_`。
+要把它映射到 0～N-1 的槽位下标，用取模：
+
+```
+index = logical_counter % capacity
+```
+
+但取模运算（`%`）在热路径上较慢。当 `capacity` 是 2 的幂时，可以用位运算替代：
+
+```
+mask = capacity - 1
+index = logical_counter & mask
+```
+
+原理：`logical_counter` 二进制低 M 位（`M = log2(capacity)`）恰好就是 `logical_counter % capacity`。
+
+**各字段配合关系：**
+
+```
+slotBytes_ = sizeof(MsgHeader) + maxMessageSize_
+```
+
+每个槽位是一块连续的 `slotBytes_` 字节的预分配内存，包含固定头 + 最大 payload 缓冲区。
+
+```
+slots_ 存放 N 块独立内存，每块 slotBytes_ 字节
+slot(i) = slots_[i % N]  // 环形下标
+        = slots_[i & mask_]  // 用 mask 做 & 取模，比 % 更快
+```
+
+**为什么用 `std::unique_ptr<std::byte[]>` 而不是 `char`？**
+
+`std::byte` 是 C++17 引入的类型，仅表示原始字节，无字符语义。用它强调这段内存是"未解释的二进制数据"，比 `char` 更准确，也避免误用字符串操作。
