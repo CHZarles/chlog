@@ -35,7 +35,7 @@ RotatingFileSink::RotatingFileSink(std::string filePath, size_t maxSize,
     throw std::runtime_error("ftell failed");
   }
 
-  // 8 byte : long and size_t
+  // size_t 的宽度在所有主流平台都大于 long
   curSize_ = static_cast<size_t>(pos);
 }
 

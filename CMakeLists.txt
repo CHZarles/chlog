@@ -30,6 +30,7 @@ add_library(chlog STATIC
     src/chlog.cpp
     src/format.cpp
     src/sink.cpp
+    src/queue.cpp
 )
 add_library(chlog::sink ALIAS chlog)
 
@@ -46,6 +47,7 @@ if(BUILD_TESTING)
         tests/test_sync_log.cpp
         tests/rotating_file_sink_test.cpp
         tests/format_common_test.cpp
+        tests/queue_test.cpp
     )
     target_link_libraries(chlog_tests PRIVATE chlog::sink doctest::doctest)
     add_test(NAME chlog_tests COMMAND chlog_tests)

@@ -15,7 +15,15 @@ RuntimeSPSCQueue::RuntimeSPSCQueue(size_t capacity, uint32_t maxMessageSize)
     new (slot.get()) MsgHeader();
   }
 }
+// slot：根据逻辑下标（producer_/consumer_）映射到实际环形槽位地址。
+// 利用 mask_ = capacity_ - 1 将逻辑序号转为 0~capacity_-1 的环形下标。
+// 当 capacity_ 为 2 的幂时，index & mask_ 等价于 index % capacity_，但更快。
+MsgHeader *RuntimeSPSCQueue::slot(size_t index) {
+  return reinterpret_cast<MsgHeader *>(slots_[index & mask_].get());
+}
 
+/* ---------------------------- 生产者部分 -----------------------------------
+ */
 // alloc：生产者申请可写槽位。
 // 1. 检查 size 是否超限。
 // 2. 用 acquire 读 consumer_（消费者位置），用 relaxed 读
@@ -28,11 +36,14 @@ MsgHeader *RuntimeSPSCQueue::alloc(uint32_t size) {
   if (size > maxMessageSize_)
     return nullptr;
 
-  const size_t consumer = consumer_.load(std::memory_order_acquire);
-  const size_t producer = producer_.load(std::memory_order_relaxed);
-  if ((producer - consumer) >= capacity_)
+  const size_t consumer = consumer_.load(
+      std::memory_order_acquire); // 确认下面发生的操作，不会优化到上面
+  const size_t producer =
+      producer_.load(std::memory_order_relaxed); // 只保证自己的原子性
+  if ((producer - consumer) >= capacity_)        // 通过指针距离判断
     return nullptr;
 
+  // 取出内存块
   MsgHeader *header = slot(producer);
   header->size = size;
   header->logId = 0;
@@ -46,6 +57,7 @@ void RuntimeSPSCQueue::push() {
   producer_.fetch_add(1, std::memory_order_release);
 }
 
+/* -------------------------- 消费者部分------------------------------------*/
 // front：消费者读取当前可消费槽位。
 // 1. 用 acquire 读 producer_（生产者最新位置），用 relaxed 读 consumer_。
 // 2. 若两者相等说明队列为空，返回 nullptr。
@@ -68,11 +80,4 @@ void RuntimeSPSCQueue::pop() {
   header->logId = 0;
   header->timestamp_us = 0;
   consumer_.fetch_add(1, std::memory_order_release);
-}
-
-// slot：根据逻辑下标（producer_/consumer_）映射到实际环形槽位地址。
-// 利用 mask_ = capacity_ - 1 将逻辑序号转为 0~capacity_-1 的环形下标。
-// 当 capacity_ 为 2 的幂时，index & mask_ 等价于 index % capacity_，但更快。
-MsgHeader *RuntimeSPSCQueue::slot(size_t index) {
-  return reinterpret_cast<MsgHeader *>(slots_[index & mask_].get());
 }
