@@ -65,17 +65,23 @@ public:
                    size_t maxBackups = 3);
   ~RotatingFileSink() override;
 
-  void write(std::string_view message, Level level) override;
-  void flush() override;
+  void write(std::string_view message, Level level) noexcept override;
+  void flush() noexcept override;
+  bool writeChecked(std::string_view message, Level level) noexcept;
+  bool flushChecked() noexcept;
+  std::string lastError() const;
 
 private:
-  void rotate();
+  bool rotate();
+  bool fail(std::string message) noexcept;
+  bool failLiteral(const char *message) noexcept;
 
   const std::string filePath_;
   const size_t maxSize_;
   const size_t maxBackups_;
 
-  std::mutex mtx_;
+  mutable std::mutex mtx_;
   std::FILE *file_ = nullptr;
   size_t curSize_ = 0;
+  std::string lastError_;
 };

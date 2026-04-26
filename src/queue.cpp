@@ -1,13 +1,29 @@
 #include "queue.h"
 #include <cstring>
 #include <memory>
+#include <stdexcept>
+
+namespace {
+bool is_power_of_two(size_t value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
+size_t checked_capacity(size_t capacity) {
+  if (!is_power_of_two(capacity)) {
+    throw std::invalid_argument(
+        "RuntimeSPSCQueue capacity must be a non-zero power of two");
+  }
+  return capacity;
+}
+} // namespace
 
 // 构造函数：预分配 capacity 个槽位，每个槽位大小为 sizeof(MsgHeader) +
 // maxMessageSize。 使用 unique_ptr 管理各槽位内存，无需运行时频繁申请/释放。
 // memset 0 初始化字节区，再用 placement new 构造
 // MsgHeader，确保头结构被正确初始化。
 RuntimeSPSCQueue::RuntimeSPSCQueue(size_t capacity, uint32_t maxMessageSize)
-    : capacity_(capacity), maxMessageSize_(maxMessageSize), mask_(capacity - 1),
+    : capacity_(checked_capacity(capacity)), maxMessageSize_(maxMessageSize),
+      mask_(capacity_ - 1),
       slotBytes_(sizeof(MsgHeader) + maxMessageSize), slots_(capacity) {
   for (auto &slot : slots_) {
     slot = std::make_unique<std::byte[]>(slotBytes_);
