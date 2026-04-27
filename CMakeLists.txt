@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(chlog LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads REQUIRED)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export compile commands for clangd" FORCE)
@@ -38,7 +39,7 @@ target_include_directories(chlog PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(chlog PUBLIC fmt::fmt)
+target_link_libraries(chlog PUBLIC fmt::fmt Threads::Threads)
 
 include(CTest)
 if(BUILD_TESTING)
