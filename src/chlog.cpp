@@ -19,6 +19,64 @@ uint64_t timestamp_us_of(
 }
 } // namespace
 
+namespace detail {
+class ThreadQueue {
+public:
+  explicit ThreadQueue(size_t capacity, uint32_t maxMessageSize)
+      : maxPayloadBytes_(maxMessageSize), queue_(capacity, maxMessageSize) {}
+
+  bool enqueue(const LogEntry &entry, uint64_t timestampUs) {
+    const uint8_t nameLen = static_cast<uint8_t>(std::min(
+        entry.threadName.size(), static_cast<size_t>(QueueMsg::NAME_CAPACITY)));
+    const uint32_t messageLen = static_cast<uint32_t>(entry.message.size());
+    const uint32_t basePayloadBytes =
+        QueueMsg::payload_bytes(nameLen, 0, messageLen);
+    if (basePayloadBytes > maxPayloadBytes_) {
+      return false;
+    }
+
+    const uint16_t fileLen = static_cast<uint16_t>(std::min(
+        entry.file.size(),
+        static_cast<size_t>(maxPayloadBytes_ - basePayloadBytes)));
+    const uint32_t packedSize = 3u + nameLen + fileLen + messageLen;
+    const uint32_t payloadBytes =
+        QueueMsg::payload_bytes(nameLen, fileLen, messageLen);
+
+    MsgHeader *hdr = queue_.alloc(payloadBytes);
+    if (!hdr) {
+      return false;
+    }
+
+    char *const payload = hdr->payload();
+    QueueMsg::size_ref(payload) = packedSize;
+    QueueMsg::nameLen_ref(payload) = nameLen;
+    if (nameLen > 0) {
+      std::memcpy(payload + QueueMsg::NAME_OFFSET, entry.threadName.data(),
+                  nameLen);
+    }
+    QueueMsg::set_file_len(payload, nameLen, fileLen);
+    if (fileLen > 0) {
+      std::memcpy(payload + QueueMsg::file_offset(nameLen), entry.file.data(),
+                  fileLen);
+    }
+    std::memcpy(payload + QueueMsg::message_offset(nameLen, fileLen),
+                entry.message.data(), messageLen);
+
+    hdr->logId = static_cast<uint32_t>(entry.level);
+    hdr->timestamp_us = timestampUs;
+    queue_.push();
+    return true;
+  }
+
+  MsgHeader *front() { return queue_.front(); }
+  void pop() { queue_.pop(); }
+
+private:
+  uint32_t maxPayloadBytes_;
+  RuntimeSPSCQueue queue_;
+};
+} // namespace detail
+
 chlog &chlog::instance() {
   static chlog ins;
   return ins;
@@ -45,53 +103,41 @@ std::string chlog::formatLine(const LogEntry &entry) {
   return hdrFmt.format(entry) + entry.message;
 }
 
-bool chlog::tryEnqueue(const LogEntry &entry) {
-  const uint8_t nameLen = static_cast<uint8_t>(
-      std::min(entry.threadName.size(), static_cast<size_t>(QueueMsg::NAME_CAPACITY)));
-  const uint32_t messageLen = static_cast<uint32_t>(entry.message.size());
-
-  std::lock_guard<std::mutex> lock(stateMutex_);
-  if (!running_.load(std::memory_order_acquire) || !queue_) {
-    return false;
+std::shared_ptr<detail::ThreadQueue> chlog::thisThreadQueueOwned() {
+  const auto id = std::this_thread::get_id();
+  auto it = producerMap_.find(id);
+  if (it != producerMap_.end()) {
+    return it->second;
   }
 
-  const uint32_t maxPayloadBytes = queueConfig_.maxMessageSize;
-  const uint32_t basePayloadBytes =
-      QueueMsg::payload_bytes(nameLen, 0, messageLen);
-  if (basePayloadBytes > maxPayloadBytes) {
-    return false;
+  auto queue = std::make_shared<detail::ThreadQueue>(queueConfig_.capacity,
+                                                     queueConfig_.maxMessageSize);
+  producerMap_[id] = queue;
+  return queue;
+}
+
+bool chlog::tryEnqueue(const LogEntry &entry, uint64_t timestampUs) {
+  std::shared_ptr<detail::ThreadQueue> queue;
+  {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (!running_.load(std::memory_order_acquire)) {
+      return false;
+    }
+    queue = thisThreadQueueOwned();
+    ++activeProducers_;
   }
 
-  const uint16_t fileLen = static_cast<uint16_t>(std::min(
-      entry.file.size(), static_cast<size_t>(maxPayloadBytes - basePayloadBytes)));
-  const uint32_t packedSize = 3u + nameLen + fileLen + messageLen;
-  const uint32_t payloadBytes =
-      QueueMsg::payload_bytes(nameLen, fileLen, messageLen);
+  const bool queued = queue->enqueue(entry, timestampUs);
 
-  MsgHeader *hdr = queue_->alloc(payloadBytes);
-  if (!hdr) {
-    return false;
+  {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    --activeProducers_;
+    if (activeProducers_ == 0) {
+      activeProducerCv_.notify_all();
+    }
   }
 
-  char *const payload = hdr->payload();
-  QueueMsg::size_ref(payload) = packedSize;
-  QueueMsg::nameLen_ref(payload) = nameLen;
-  if (nameLen > 0) {
-    std::memcpy(payload + QueueMsg::NAME_OFFSET, entry.threadName.data(),
-                nameLen);
-  }
-  QueueMsg::set_file_len(payload, nameLen, fileLen);
-  if (fileLen > 0) {
-    std::memcpy(payload + QueueMsg::file_offset(nameLen), entry.file.data(),
-                fileLen);
-  }
-  std::memcpy(payload + QueueMsg::message_offset(nameLen, fileLen),
-              entry.message.data(), messageLen);
-
-  hdr->logId = static_cast<uint32_t>(entry.level);
-  hdr->timestamp_us = timestamp_us_of(entry.timestamp);
-  queue_->push();
-  return true;
+  return queued;
 }
 
 void chlog::writeLineToSinks(std::string_view line, Level lvl,
@@ -118,9 +164,11 @@ void chlog::log(Level lvl, std::string message, SourceLocation src) {
     return;
   }
 
-  LogEntry entry(timestamp_us_of(std::chrono::system_clock::now()), lvl,
-                 this_thread_name(), std::move(message), sourceText);
-  if (!tryEnqueue(entry)) {
+  const uint64_t timestampUs =
+      timestamp_us_of(std::chrono::system_clock::now());
+  LogEntry entry(timestampUs, lvl, this_thread_name(), std::move(message),
+                 sourceText);
+  if (!tryEnqueue(entry, timestampUs)) {
     const std::string line = formatLine(entry);
     writeLineToSinks(line, entry.level, true);
   }
@@ -162,8 +210,6 @@ chlog &chlog::start(std::chrono::milliseconds pollInterval) {
   if (running_.load(std::memory_order_acquire) || worker_.joinable())
     return *this;
 
-  queue_ = std::make_unique<RuntimeSPSCQueue>(queueConfig_.capacity,
-                                              queueConfig_.maxMessageSize);
   pollInterval_ = pollInterval;
   running_.store(true, std::memory_order_release);
   worker_ = std::thread(&chlog::workerLoop, this);
@@ -183,49 +229,53 @@ void chlog::stop() noexcept {
     worker.join();
 
   std::lock_guard<std::mutex> lock(stateMutex_);
-  queue_.reset();
+  producerMap_.clear();
 }
 
 void chlog::workerLoop() noexcept {
   while (running_.load(std::memory_order_acquire)) {
-    drainQueue();
+    drainQueues(false);
     if (!running_.load(std::memory_order_acquire))
       break;
     std::this_thread::sleep_for(pollInterval_);
   }
 
-  drainQueue();
+  {
+    std::unique_lock<std::mutex> lock(stateMutex_);
+    activeProducerCv_.wait(lock, [this] { return activeProducers_ == 0; });
+  }
+  drainQueues(true);
   std::lock_guard<std::mutex> lock(configMutex_);
   for (auto &sink : sinks_)
     sink->flush();
 }
 
-void chlog::drainQueue() {
-  while (true) {
-    uint64_t timestampUs = 0;
-    Level lvl = Level::INFO;
-    std::string threadName;
-    std::string message;
-    std::string sourceText;
-    {
-      std::lock_guard<std::mutex> lock(stateMutex_);
-      if (!queue_)
-        return;
-      MsgHeader *hdr = queue_->front();
-      if (!hdr)
-        return;
-
-      char *payload = hdr->payload();
-      timestampUs = hdr->timestamp_us;
-      lvl = static_cast<Level>(hdr->logId);
-      threadName.assign(QueueMsg::threadName(payload));
-      message.assign(QueueMsg::message(payload));
-      sourceText.assign(QueueMsg::file(payload));
-      queue_->pop();
+void chlog::drainQueues(bool drainAll) {
+  std::vector<std::shared_ptr<detail::ThreadQueue>> queues;
+  {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    queues.reserve(producerMap_.size());
+    for (auto &kv : producerMap_) {
+      queues.push_back(kv.second);
     }
-    LogEntry entry(timestampUs, lvl, std::move(threadName), std::move(message),
-                   std::move(sourceText));
-    const std::string line = formatLine(entry);
-    writeLineToSinks(line, entry.level, false);
   }
+
+  bool anyWork = false;
+  do {
+    anyWork = false;
+    for (const auto &queueRef : queues) {
+      detail::ThreadQueue *queue = queueRef.get();
+      while (MsgHeader *hdr = queue->front()) {
+        char *payload = hdr->payload();
+        LogEntry entry(hdr->timestamp_us, static_cast<Level>(hdr->logId),
+                       std::string(QueueMsg::threadName(payload)),
+                       std::string(QueueMsg::message(payload)),
+                       std::string(QueueMsg::file(payload)));
+        const std::string line = formatLine(entry);
+        writeLineToSinks(line, entry.level, false);
+        queue->pop();
+        anyWork = true;
+      }
+    }
+  } while (drainAll && anyWork);
 }

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <regex>
+#include <future>
 #include <string>
 #include <thread>
 
@@ -129,6 +130,44 @@ TEST_CASE("chlog async queues structured messages before worker formatting") {
   CHECK_NE(finalOutput.find("short"), std::string::npos);
   CHECK_NE(finalOutput.find("[INFO]"), std::string::npos);
   CHECK_NE(finalOutput.find("structured.cpp:42"), std::string::npos);
+
+  cleanup_log_path(logPath);
+}
+
+TEST_CASE("chlog async gives each producer thread its own queue budget") {
+  const fs::path logPath =
+      fs::temp_directory_path() / "chlog_async_per_thread_queue_test.log";
+  cleanup_log_path(logPath);
+
+  auto &logger = chlog::instance();
+  logger.level(Level::INFO);
+  logger.queueConfig(1, 64);
+  logger.addRotatingFileSink(logPath.string(), 1024 * 1024, 1);
+  logger.start(1s);
+  std::this_thread::sleep_for(20ms);
+
+  std::promise<void> startSignal;
+  std::shared_future<void> start = startSignal.get_future().share();
+  auto emit = [&logger, start](const char *message) {
+    start.wait();
+    logger.log(Level::INFO, message, {"per_thread.cpp", 7, "emit"});
+  };
+
+  std::thread first(emit, "thread-a");
+  std::thread second(emit, "thread-b");
+  startSignal.set_value();
+  first.join();
+  second.join();
+
+  const std::string immediate = slurp(logPath);
+  CHECK_EQ(immediate.find("thread-a"), std::string::npos);
+  CHECK_EQ(immediate.find("thread-b"), std::string::npos);
+
+  logger.stop();
+
+  const std::string finalOutput = slurp(logPath);
+  CHECK_NE(finalOutput.find("thread-a"), std::string::npos);
+  CHECK_NE(finalOutput.find("thread-b"), std::string::npos);
 
   cleanup_log_path(logPath);
 }
