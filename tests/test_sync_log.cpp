@@ -106,3 +106,29 @@ TEST_CASE("chlog stop drains queued async log entries") {
 
   cleanup_log_path(logPath);
 }
+
+TEST_CASE("chlog async queues structured messages before worker formatting") {
+  const fs::path logPath =
+      fs::temp_directory_path() / "chlog_async_structured_message_test.log";
+  cleanup_log_path(logPath);
+
+  auto &logger = chlog::instance();
+  logger.level(Level::INFO);
+  logger.queueConfig(4, 40);
+  logger.addRotatingFileSink(logPath.string(), 1024 * 1024, 1);
+  logger.start(1s);
+
+  logger.log(Level::INFO, "short", {"structured.cpp", 42, "test"});
+
+  const std::string immediate = slurp(logPath);
+  CHECK_EQ(immediate.find("short"), std::string::npos);
+
+  logger.stop();
+
+  const std::string finalOutput = slurp(logPath);
+  CHECK_NE(finalOutput.find("short"), std::string::npos);
+  CHECK_NE(finalOutput.find("[INFO]"), std::string::npos);
+  CHECK_NE(finalOutput.find("structured.cpp:42"), std::string::npos);
+
+  cleanup_log_path(logPath);
+}

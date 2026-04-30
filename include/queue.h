@@ -4,7 +4,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 // 每条队列消息的固定头部。
@@ -20,6 +22,71 @@ struct MsgHeader {
   inline char *payload() { return reinterpret_cast<char *>(this + 1); }
   inline const char *payload() const {
     return reinterpret_cast<const char *>(this + 1);
+  }
+};
+
+struct QueueMsg {
+  enum { NAME_OFFSET = 5 };
+  enum { NAME_CAPACITY = 15 };
+  enum { FILE_LEN_BYTES = 2 };
+
+  static uint32_t &size_ref(char *p) {
+    return *reinterpret_cast<uint32_t *>(p);
+  }
+
+  static uint8_t &nameLen_ref(char *p) {
+    return *reinterpret_cast<uint8_t *>(p + 4);
+  }
+
+  static constexpr uint32_t file_len_offset(uint8_t nameLen) {
+    return NAME_OFFSET + nameLen;
+  }
+
+  static constexpr uint32_t file_offset(uint8_t nameLen) {
+    return file_len_offset(nameLen) + FILE_LEN_BYTES;
+  }
+
+  static constexpr uint32_t message_offset(uint8_t nameLen, uint16_t fileLen) {
+    return file_offset(nameLen) + fileLen;
+  }
+
+  static constexpr uint32_t payload_bytes(uint8_t nameLen, uint16_t fileLen,
+                                          uint32_t messageLen) {
+    return message_offset(nameLen, fileLen) + messageLen;
+  }
+
+  static void set_file_len(char *p, uint8_t nameLen, uint16_t fileLen) {
+    std::memcpy(p + file_len_offset(nameLen), &fileLen, sizeof(fileLen));
+  }
+
+  static uint16_t file_len(char *p, uint8_t nameLen) {
+    uint16_t fileLen = 0;
+    std::memcpy(&fileLen, p + file_len_offset(nameLen), sizeof(fileLen));
+    return fileLen;
+  }
+
+  static std::string_view threadName(char *p) {
+    const uint8_t nameLen = nameLen_ref(p);
+    if (nameLen == 0)
+      return "<unnamed>";
+    return std::string_view(p + NAME_OFFSET, nameLen);
+  }
+
+  static std::string_view file(char *p) {
+    const uint8_t nameLen = nameLen_ref(p);
+    const uint16_t fileLen = QueueMsg::file_len(p, nameLen);
+    if (fileLen == 0)
+      return {};
+    return std::string_view(p + file_offset(nameLen), fileLen);
+  }
+
+  static std::string_view message(char *p) {
+    const uint32_t size = size_ref(p);
+    const uint8_t nameLen = nameLen_ref(p);
+    const uint16_t fileLen = QueueMsg::file_len(p, nameLen);
+    const uint32_t msgLen =
+        (size < 3u + nameLen + fileLen) ? 0u : (size - 3u - nameLen - fileLen);
+    return std::string_view(p + message_offset(nameLen, fileLen), msgLen);
   }
 };
 

@@ -42,8 +42,8 @@ private:
   chlog(const chlog &) = delete;
   chlog &operator=(const chlog &) = delete;
 
-  std::string formatLine(Level lvl, const std::string &message,
-                         const std::string &sourceText);
+  std::string formatLine(const LogEntry &entry);
+  bool tryEnqueue(const LogEntry &entry);
   void writeLineToSinks(std::string_view line, Level lvl, bool flushAfterWrite);
   void workerLoop() noexcept;
   void drainQueue();
