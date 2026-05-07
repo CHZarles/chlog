@@ -5,7 +5,6 @@
 #include "sink.h"
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -17,25 +16,23 @@ namespace detail {
 class ThreadQueue;
 }
 
-class chlog {
+// ---------------------------------------------------------------------------
+// Logger — 核心日志类
+// ---------------------------------------------------------------------------
+class Logger {
 public:
-  static chlog &instance();
+  static Logger &instance();
 
-  chlog &level(Level lvl);
-
+  // 可选配置
+  Logger &level(Level lvl);
   Level level() const;
-
   bool shouldLog(Level lvl) const;
+  Logger &headerPattern(std::string pattern);
+  Logger &addRotatingFileSink(std::string path, size_t maxSize = 10 * 1024 * 1024,
+                              size_t maxBackups = 3);
+  void stop() noexcept;
 
   void log(Level lvl, std::string message, SourceLocation src = {});
-
-  chlog &addConsoleSink(bool useColour = true);
-  chlog &addRotatingFileSink(std::string path, size_t maxSize,
-                             size_t maxBackups = 3);
-  chlog &queueConfig(size_t capacity, uint32_t maxMessageSize);
-  chlog &start(std::chrono::milliseconds pollInterval =
-                   std::chrono::milliseconds(5));
-  void stop() noexcept;
 
 private:
   struct QueueConfig {
@@ -43,28 +40,72 @@ private:
     uint32_t maxMessageSize = 512;
   };
 
-  chlog() = default;
-  ~chlog();
-  chlog(const chlog &) = delete;
-  chlog &operator=(const chlog &) = delete;
-
+  Logger() = default;
+  ~Logger();
+  Logger(const Logger &) = delete;
+  Logger &operator=(const Logger &) = delete;
   std::string formatLine(const LogEntry &entry);
-  bool tryEnqueue(const LogEntry &entry, uint64_t timestampUs);
   void writeLineToSinks(std::string_view line, Level lvl, bool flushAfterWrite);
   void workerLoop() noexcept;
   void drainQueues(bool drainAll);
   std::shared_ptr<detail::ThreadQueue> thisThreadQueueOwned();
 
   std::atomic<Level> minLevel_{Level::DEBUG};
+  static thread_local std::shared_ptr<detail::ThreadQueue> t_queue_;
+
   std::vector<std::unique_ptr<Sink>> sinks_;
   std::atomic<bool> running_{false};
   mutable std::mutex stateMutex_;
-  std::condition_variable activeProducerCv_;
   mutable std::mutex configMutex_;
   std::thread worker_;
   std::chrono::milliseconds pollInterval_{5};
   QueueConfig queueConfig_{};
-  size_t activeProducers_ = 0;
   std::map<std::thread::id, std::shared_ptr<detail::ThreadQueue>> producerMap_;
-  HeaderFormatter headerFmt_; // 用默认配置
+  HeaderFormatter headerFmt_{"{HMSf} [{level}] "};
+  bool autoInitialized_ = false;
 };
+
+// ---------------------------------------------------------------------------
+// 全局便捷函数 — 类似 spdlog 的用法
+// ---------------------------------------------------------------------------
+namespace chlog {
+
+template <typename... Args>
+inline void debug(fmt::format_string<Args...> fmt, Args &&...args) {
+  if (!Logger::instance().shouldLog(Level::DEBUG))
+    return;
+  Logger::instance().log(Level::DEBUG,
+                        fmt::format(fmt, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void info(fmt::format_string<Args...> fmt, Args &&...args) {
+  if (!Logger::instance().shouldLog(Level::INFO))
+    return;
+  Logger::instance().log(Level::INFO,
+                        fmt::format(fmt, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void warn(fmt::format_string<Args...> fmt, Args &&...args) {
+  if (!Logger::instance().shouldLog(Level::WARN))
+    return;
+  Logger::instance().log(Level::WARN,
+                        fmt::format(fmt, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void error(fmt::format_string<Args...> fmt, Args &&...args) {
+  if (!Logger::instance().shouldLog(Level::ERROR))
+    return;
+  Logger::instance().log(Level::ERROR,
+                        fmt::format(fmt, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void critical(fmt::format_string<Args...> fmt, Args &&...args) {
+  Logger::instance().log(Level::CRITICAL,
+                        fmt::format(fmt, std::forward<Args>(args)...));
+}
+
+} // namespace chlog

@@ -29,7 +29,6 @@ FetchContent_MakeAvailable(doctest)
 # ---------------------------------------------------------------------------
 add_library(chlog STATIC
     src/chlog.cpp
-    src/format.cpp
     src/sink.cpp
     src/queue.cpp
 )

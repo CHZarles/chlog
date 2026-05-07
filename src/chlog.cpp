@@ -77,33 +77,44 @@ private:
 };
 } // namespace detail
 
-chlog &chlog::instance() {
-  static chlog ins;
+thread_local std::shared_ptr<detail::ThreadQueue> Logger::t_queue_{nullptr};
+
+Logger &Logger::instance() {
+  static Logger ins;
   return ins;
 }
 
-chlog::~chlog() { stop(); }
+Logger::~Logger() { stop(); }
 
-chlog &chlog::level(Level lvl) {
+Logger &Logger::level(Level lvl) {
   minLevel_.store(lvl, std::memory_order_relaxed);
   return *this;
 }
-Level chlog::level() const { return minLevel_.load(std::memory_order_relaxed); }
 
-bool chlog::shouldLog(Level lvl) const {
+Level Logger::level() const {
+  return minLevel_.load(std::memory_order_relaxed);
+}
+
+bool Logger::shouldLog(Level lvl) const {
   return lvl >= minLevel_.load(std::memory_order_relaxed);
 }
 
-std::string chlog::formatLine(const LogEntry &entry) {
+Logger &Logger::headerPattern(std::string pattern) {
+  std::lock_guard<std::mutex> lock(configMutex_);
+  headerFmt_ = HeaderFormatter(std::move(pattern));
+  return *this;
+}
+
+std::string Logger::formatLine(const LogEntry &entry) {
   HeaderFormatter hdrFmt;
   {
     std::lock_guard<std::mutex> lock(configMutex_);
     hdrFmt = headerFmt_;
   }
-  return hdrFmt.format(entry) + entry.message;
+  return hdrFmt.format(entry) + " " + entry.message;
 }
 
-std::shared_ptr<detail::ThreadQueue> chlog::thisThreadQueueOwned() {
+std::shared_ptr<detail::ThreadQueue> Logger::thisThreadQueueOwned() {
   const auto id = std::this_thread::get_id();
   auto it = producerMap_.find(id);
   if (it != producerMap_.end()) {
@@ -116,32 +127,8 @@ std::shared_ptr<detail::ThreadQueue> chlog::thisThreadQueueOwned() {
   return queue;
 }
 
-bool chlog::tryEnqueue(const LogEntry &entry, uint64_t timestampUs) {
-  std::shared_ptr<detail::ThreadQueue> queue;
-  {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    if (!running_.load(std::memory_order_acquire)) {
-      return false;
-    }
-    queue = thisThreadQueueOwned();
-    ++activeProducers_;
-  }
-
-  const bool queued = queue->enqueue(entry, timestampUs);
-
-  {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    --activeProducers_;
-    if (activeProducers_ == 0) {
-      activeProducerCv_.notify_all();
-    }
-  }
-
-  return queued;
-}
-
-void chlog::writeLineToSinks(std::string_view line, Level lvl,
-                             bool flushAfterWrite) {
+void Logger::writeLineToSinks(std::string_view line, Level lvl,
+                              bool flushAfterWrite) {
   std::lock_guard<std::mutex> lock(configMutex_);
   for (auto &sink : sinks_)
     sink->write(line, lvl);
@@ -151,72 +138,58 @@ void chlog::writeLineToSinks(std::string_view line, Level lvl,
   }
 }
 
-void chlog::log(Level lvl, std::string message, SourceLocation src) {
-  if (!shouldLog(lvl))
-    return;
-
+void Logger::log(Level lvl, std::string message, SourceLocation src) {
   const std::string sourceText = format_source_location(src);
 
+  // 自动初始化：首次调用时自动添加 console sink 并启动
   if (!running_.load(std::memory_order_acquire)) {
-    LogEntry entry(lvl, std::move(message), sourceText);
-    const std::string line = formatLine(entry);
-    writeLineToSinks(line, entry.level, true);
-    return;
+    bool shouldStart = false;
+    {
+      std::lock_guard<std::mutex> lock(configMutex_);
+      if (sinks_.empty() && !worker_.joinable()) {
+        sinks_.push_back(std::make_unique<ConsoleSink>(false));
+        autoInitialized_ = true;
+        shouldStart = true;
+      }
+    }
+    if (shouldStart) {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      running_.store(true, std::memory_order_release);
+      worker_ = std::thread(&Logger::workerLoop, this);
+    }
   }
 
-  const uint64_t timestampUs =
-      timestamp_us_of(std::chrono::system_clock::now());
-  LogEntry entry(timestampUs, lvl, this_thread_name(), std::move(message),
-                 sourceText);
-  if (!tryEnqueue(entry, timestampUs)) {
+  // 热路径：使用 thread_local 缓存的队列指针，完全无锁
+  auto queue = t_queue_;
+  if (!queue) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    queue = thisThreadQueueOwned();
+    t_queue_ = queue;
+  }
+
+  const uint64_t timestampUs = timestamp_us_of(std::chrono::system_clock::now());
+  LogEntry entry(timestampUs, lvl, this_thread_name(), std::move(message), sourceText);
+
+  // 队列满则降级同步写
+  if (!queue->enqueue(entry, timestampUs)) {
     const std::string line = formatLine(entry);
     writeLineToSinks(line, entry.level, true);
   }
 }
 
-chlog &chlog::addConsoleSink(bool useColour) {
+Logger &Logger::addRotatingFileSink(std::string path, size_t maxSize,
+                                    size_t maxBackups) {
   std::lock_guard<std::mutex> lock(configMutex_);
-  sinks_.push_back(std::make_unique<ConsoleSink>(useColour));
-  return *this;
-}
-
-chlog &chlog::addRotatingFileSink(std::string path, size_t maxSize,
-                                  size_t maxBackups) {
-  std::lock_guard<std::mutex> lock(configMutex_);
+  if (autoInitialized_) {
+    sinks_.clear();
+    autoInitialized_ = false;
+  }
   sinks_.push_back(
       std::make_unique<RotatingFileSink>(std::move(path), maxSize, maxBackups));
   return *this;
 }
 
-chlog &chlog::queueConfig(size_t capacity, uint32_t maxMessageSize) {
-  if (!is_power_of_two(capacity)) {
-    throw std::invalid_argument(
-        "queue capacity must be a non-zero power of two");
-  }
-  if (maxMessageSize == 0) {
-    throw std::invalid_argument("queue max message size must be positive");
-  }
-
-  std::lock_guard<std::mutex> lock(stateMutex_);
-  if (running_.load(std::memory_order_acquire)) {
-    throw std::logic_error("queue configuration cannot change while running");
-  }
-  queueConfig_ = QueueConfig{capacity, maxMessageSize};
-  return *this;
-}
-
-chlog &chlog::start(std::chrono::milliseconds pollInterval) {
-  std::lock_guard<std::mutex> lock(stateMutex_);
-  if (running_.load(std::memory_order_acquire) || worker_.joinable())
-    return *this;
-
-  pollInterval_ = pollInterval;
-  running_.store(true, std::memory_order_release);
-  worker_ = std::thread(&chlog::workerLoop, this);
-  return *this;
-}
-
-void chlog::stop() noexcept {
+void Logger::stop() noexcept {
   std::thread worker;
   {
     std::lock_guard<std::mutex> lock(stateMutex_);
@@ -232,17 +205,12 @@ void chlog::stop() noexcept {
   producerMap_.clear();
 }
 
-void chlog::workerLoop() noexcept {
+void Logger::workerLoop() noexcept {
   while (running_.load(std::memory_order_acquire)) {
     drainQueues(false);
     if (!running_.load(std::memory_order_acquire))
       break;
     std::this_thread::sleep_for(pollInterval_);
-  }
-
-  {
-    std::unique_lock<std::mutex> lock(stateMutex_);
-    activeProducerCv_.wait(lock, [this] { return activeProducers_ == 0; });
   }
   drainQueues(true);
   std::lock_guard<std::mutex> lock(configMutex_);
@@ -250,7 +218,7 @@ void chlog::workerLoop() noexcept {
     sink->flush();
 }
 
-void chlog::drainQueues(bool drainAll) {
+void Logger::drainQueues(bool drainAll) {
   std::vector<std::shared_ptr<detail::ThreadQueue>> queues;
   {
     std::lock_guard<std::mutex> lock(stateMutex_);
